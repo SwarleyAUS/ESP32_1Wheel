@@ -44,7 +44,7 @@ const int LED = 2;
 const int SAFE_SW = 16;
 const int VESC_THR = 17;
 const int PWR_SW = 18;
-const int logSize = 20;
+const int logSize = 10;
 
 // Consts
 float accLimit = 16384.0;
@@ -135,15 +135,15 @@ void loop() {
 
 float setThrottle(float thrTarget, float thrValue) {
   if (thrTarget < 0) {
-    if (thrTarget < thrValue - 5) {
-      thrValue = thrValue + ((thrTarget - thrValue)/5.0);
-    } else if (thrTarget > thrValue + 5) {
+    if (thrTarget < thrValue) {
+      thrValue = thrValue + ((thrTarget - thrValue)/2.0);
+    } else if (thrTarget > thrValue) {
       thrValue = thrValue + (((thrTarget - thrValue)/2.0));
     }
   } else {
-    if (thrTarget > thrValue + 5) { // Increase throttle if pitching forward (+10% dead zone)
-      thrValue = thrValue + ((thrTarget - thrValue)/5.0);
-    } else if (thrTarget < thrValue - 5) { // Decrease throttle if pitching back (-10% dead zone)
+    if (thrTarget > thrValue) { // Increase throttle if pitching forward
+      thrValue = thrValue + ((thrTarget - thrValue)/2.0);
+    } else if (thrTarget < thrValue) { // Decrease throttle if pitching back
       thrValue = thrValue + (((thrTarget - thrValue)/2.0));
     }
   }
