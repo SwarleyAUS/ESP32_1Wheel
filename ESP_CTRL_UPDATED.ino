@@ -6,9 +6,9 @@
 #endif
 
 /* Connections:
-   Pin 16 - Safety switch input
-   Pin 17 - VESC output
-   Pin 18 - BAT SW output
+   DIO 16 - Safety switch input
+   DIO 17 - VESC output
+   DIO 18 - BAT SW output
 
    Operation:
    speed linearly related to pitch (with smooting)
@@ -16,7 +16,7 @@
    if pitching back, slow down, then reverse
    if foot off safety switch, stop
 
-   Options not yet implemented:
+   Functionality not yet implemented:
    if acceleration consistently upwards (ascending), increase pitch-speed ratio
    if acceleration consistently downwards (descending), decrease pitch-speed ratio
    if pitching back and going down a slope (ie fwdDir = true but pich < 0), brake (or reverse throttle)
@@ -44,7 +44,7 @@ const int LED = 2;
 const int SAFE_SW = 16;
 const int VESC_THR = 17;
 const int PWR_SW = 18;
-const int logSize = 50;
+const int logSize = 20;
 
 // Consts
 float accLimit = 16384.0;
@@ -78,6 +78,7 @@ void setup() {
   pinMode(VESC_THR, OUTPUT); // VESC OUTPUT
   pinMode(LED, OUTPUT); // VESC OUTPUT
   pinMode(PWR_SW, OUTPUT); // POWER SWITCH
+  //digitalWrite(PWR_SW, HIGH);
 
   for (int i = (logSize - 1); i > 0; i--) {
     throttleLog[i] = 127;
@@ -89,12 +90,13 @@ void loop() {
   mpu6050.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);  
   zAccG = 10.0 * (float) az / accLimit; // Y-axis value  
   pitch = (float) atan2((-ax), sqrt(ay * ay + az * az)) * 57.3;
-
+  
   // SET TARGET THROTTLE
-  if (SAFE_SW == LOW) {
-    if (pitch > -2 && pitch < 2 && motorEn == false) { // After leaning forward OK to move off    
+  if (digitalRead(SAFE_SW) == 0) {
+    digitalWrite(LED, HIGH);
+    Serial.println("SW CLOSED");
+    if (pitch > -3 && pitch < 3 && motorEn == false) { // After leaning forward OK to move off    
       motorEn = true;
-      digitalWrite(LED, HIGH);
       Serial.println("MOTOR EN");
       delay(10);
     } else if (motorEn == true) {
@@ -102,6 +104,7 @@ void loop() {
       thrValue = setThrottle(thrTarget, thrValue); // Increase/decrease throttle
     }
   } else {
+    digitalWrite(LED, LOW);
     thrValue = 0.0;
   }
   
@@ -114,33 +117,34 @@ void loop() {
   // DEBUG OUTPUT
   /*Serial.print("Pitch: ");
   Serial.print(pitch);
-  Serial.print(" \t ACCG: ");
+  Serial.print("\t ACCG: ");
   Serial.print(zAccG);
   Serial.print("\t ThrTar: ");
   Serial.print(thrTarget);
   Serial.print("\t ThrVal: ");
   Serial.print(thrValue);
-  Serial.print("\t ESCThr: ");
-  Serial.println(escThrottle);*/
+  Serial.print("\t ESCThr: ");*/
+  Serial.print(escThrottle);
+  Serial.println("");
     
-  shiftData(50, throttleLog);
-  delay(20);
+  shiftData(logSize, throttleLog);
+  delay(50);
 }
 
 // ---------------------------------------------------------------------------------------
 
 float setThrottle(float thrTarget, float thrValue) {
   if (thrTarget < 0) {
-    if (thrTarget < thrValue) {
-      thrValue = thrValue - throttleStep;
-    } else if (thrTarget > thrValue) {
-      thrValue = thrValue + (throttleStep * 2.00);
+    if (thrTarget < thrValue - 5) {
+      thrValue = thrValue + ((thrTarget - thrValue)/5.0);
+    } else if (thrTarget > thrValue + 5) {
+      thrValue = thrValue + (((thrTarget - thrValue)/2.0));
     }
   } else {
-    if (thrTarget > thrValue) { // Increase throttle if pitching forward (+10% dead zone)
-      thrValue = thrValue + throttleStep;
-    } else if (thrTarget < thrValue) { // Decrease throttle if pitching back (-10% dead zone)
-      thrValue = thrValue - (throttleStep * 2.00);
+    if (thrTarget > thrValue + 5) { // Increase throttle if pitching forward (+10% dead zone)
+      thrValue = thrValue + ((thrTarget - thrValue)/5.0);
+    } else if (thrTarget < thrValue - 5) { // Decrease throttle if pitching back (-10% dead zone)
+      thrValue = thrValue + (((thrTarget - thrValue)/2.0));
     }
   }
   return thrValue;
