@@ -49,7 +49,6 @@ const int logSize = 10;
 // Consts
 float accLimit = 16384.0;
 float gyroLimit = 131.0;
-float throttleStep = 2.0;
 float throttleLog[logSize];
 
 void setup() {
@@ -65,7 +64,8 @@ void setup() {
       Fastwire::setup(400, true);
       Serial.println("FAST");
   #endif
-  
+
+  // Custom offset
   mpu6050.initialize();  
   mpu6050.setXAccelOffset(-4114);
   mpu6050.setYAccelOffset(-24);
@@ -80,7 +80,7 @@ void setup() {
   pinMode(PWR_SW, OUTPUT); // POWER SWITCH
   //digitalWrite(PWR_SW, HIGH);
 
-  for (int i = (logSize - 1); i > 0; i--) {
+  for (int i = 0; i > logSize; i++) {
     throttleLog[i] = 127;
   }
 }
@@ -94,13 +94,12 @@ void loop() {
   // SET TARGET THROTTLE
   if (digitalRead(SAFE_SW) == 0) {
     digitalWrite(LED, HIGH);
-    Serial.println("SW CLOSED");
     if (pitch > -3 && pitch < 3 && motorEn == false) { // After leaning forward OK to move off    
       motorEn = true;
       Serial.println("MOTOR EN");
       delay(10);
     } else if (motorEn == true) {
-      thrTarget = mapf(pitch, -15.0, 15.0, -100.0, 100.0, -100.0, 100.0);
+      thrTarget = mapf(pitch, -25.0, 25.0, -100.0, 100.0, -100.0, 100.0);
       thrValue = setThrottle(thrTarget, thrValue); // Increase/decrease throttle
     }
   } else {
@@ -109,8 +108,8 @@ void loop() {
   }
   
   // WRITE THROTTLE VALUE
-  escThrottle = mapf(thrValue, -100.0, 100.0, 0, 255, 0, 255); // Convert throttle value to DAC range
-  throttleLog[0] = escThrottle;
+  escThrottle = mapf(thrValue, -100.0, 100.0, 0.0, 255, 0, 255); // Convert throttle value to DAC range
+  throttleLog[0] = escThrottle; 
   escThrottle = avgData(logSize, throttleLog);
   ledcWrite(0, escThrottle); // Output analog data to ESC (0-255, 0-3.3V)
   
@@ -124,11 +123,10 @@ void loop() {
   Serial.print("\t ThrVal: ");
   Serial.print(thrValue);
   Serial.print("\t ESCThr: ");*/
-  Serial.print(escThrottle);
-  Serial.println("");
+  Serial.println(escThrottle);
     
   shiftData(logSize, throttleLog);
-  delay(50);
+  delay(20);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -136,13 +134,13 @@ void loop() {
 float setThrottle(float thrTarget, float thrValue) {
   if (thrTarget < 0) {
     if (thrTarget < thrValue) {
-      thrValue = thrValue + ((thrTarget - thrValue)/2.0);
+      thrValue = thrValue + ((thrTarget - thrValue)/3.0);
     } else if (thrTarget > thrValue) {
       thrValue = thrValue + (((thrTarget - thrValue)/2.0));
     }
   } else {
     if (thrTarget > thrValue) { // Increase throttle if pitching forward
-      thrValue = thrValue + ((thrTarget - thrValue)/2.0);
+      thrValue = thrValue + ((thrTarget - thrValue)/3.0);
     } else if (thrTarget < thrValue) { // Decrease throttle if pitching back
       thrValue = thrValue + (((thrTarget - thrValue)/2.0));
     }
