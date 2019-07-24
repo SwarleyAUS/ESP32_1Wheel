@@ -97,7 +97,8 @@ void loop() {
     if (pitch > -3 && pitch < 3 && motorEn == false) { // After leaning forward OK to move off    
       motorEn = true;
       Serial.println("MOTOR EN");
-      delay(10);
+      thrTarget = mapf(pitch, -25.0, 25.0, -100.0, 100.0, -100.0, 100.0);
+      thrValue = setThrottle(thrTarget, thrValue); // Increase/decrease throttle
     } else if (motorEn == true) {
       thrTarget = mapf(pitch, -25.0, 25.0, -100.0, 100.0, -100.0, 100.0);
       thrValue = setThrottle(thrTarget, thrValue); // Increase/decrease throttle
@@ -105,10 +106,11 @@ void loop() {
   } else {
     digitalWrite(LED, LOW);
     thrValue = 0.0;
+    motorEn = false;
   }
   
   // WRITE THROTTLE VALUE
-  escThrottle = mapf(thrValue, -100.0, 100.0, 0.0, 255, 0, 255); // Convert throttle value to DAC range
+  escThrottle = mapf(thrValue, -100.0, 100.0, 0.0, 255, 0.0, 255.0); // Convert throttle value to DAC range
   throttleLog[0] = escThrottle; 
   escThrottle = avgData(logSize, throttleLog);
   ledcWrite(0, escThrottle); // Output analog data to ESC (0-255, 0-3.3V)
