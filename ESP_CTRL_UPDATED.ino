@@ -1,17 +1,17 @@
-#include "I2Cdev.h"
-#include "MPU6050.h"
+#include <MPU6050.h>
+#include <I2Cdev.h>
 
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
     #include "Wire.h"
 #endif
 
 /* Connections:
+   DIO 2 - Internal LED
    DIO 16 - Safety switch input
    DIO 17 - VESC output
-   DIO 18 - BAT SW output
 
    Operation:
-   speed linearly related to pitch (with smooting)
+   speed linearly related to pitch (with smoothing)
    if pitching forward, speed up
    if pitching back, slow down, then reverse
    if foot off safety switch, stop
@@ -29,8 +29,7 @@
 MPU6050 mpu6050;
 
 const uint16_t MPU = 0x68;
-int16_t ax, ay, az;
-int16_t gx, gy, gz;
+int16_t ax, ay, az, gx, gy, gz;
 float zAccG, pitch;
 
 // Misc
@@ -39,16 +38,13 @@ float thrTarget = 0.0;
 int escThrottle = 0;
 bool motorEn = false;
 
-// I/Os
+// Consts
 const int LED = 2;
 const int SAFE_SW = 16;
 const int VESC_THR = 17;
-const int PWR_SW = 18;
-const int logSize = 10;
-
-// Consts
 float accLimit = 16384.0;
 float gyroLimit = 131.0;
+float pitchLog[logSize];
 float throttleLog[logSize];
 
 void setup() {
@@ -76,13 +72,13 @@ void setup() {
   
   pinMode(SAFE_SW, INPUT_PULLUP); // SAFETY INPUT
   pinMode(VESC_THR, OUTPUT); // VESC OUTPUT
-  pinMode(LED, OUTPUT); // VESC OUTPUT
-  pinMode(PWR_SW, OUTPUT); // POWER SWITCH
-  //digitalWrite(PWR_SW, HIGH);
+  pinMode(LED, OUTPUT); // ONBOARD LED OUTPUT
 
   for (int i = 0; i > logSize; i++) {
     throttleLog[i] = 127;
   }
+  
+  mpu6050.setDMPEnabled(true);
 }
 
 void loop() {
@@ -90,6 +86,10 @@ void loop() {
   mpu6050.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);  
   zAccG = 10.0 * (float) az / accLimit; // Y-axis value  
   pitch = (float) atan2((-ax), sqrt(ay * ay + az * az)) * 57.3;
+  Serial.print("Pitch raw: ");
+  Serial.print(pitch);
+  pitchLog[0] = pitch;
+  pitch = avgData(logSize, pitchLog);
   
   // SET TARGET THROTTLE
   if (digitalRead(SAFE_SW) == 0) {
@@ -116,19 +116,21 @@ void loop() {
   ledcWrite(0, escThrottle); // Output analog data to ESC (0-255, 0-3.3V)
   
   // DEBUG OUTPUT
-  /*Serial.print("Pitch: ");
+  Serial.print("\t Pitch avg: ");
   Serial.print(pitch);
-  Serial.print("\t ACCG: ");
-  Serial.print(zAccG);
-  Serial.print("\t ThrTar: ");
-  Serial.print(thrTarget);
-  Serial.print("\t ThrVal: ");
-  Serial.print(thrValue);
+  //Serial.print("\t ACCG: ");
+  //Serial.print(zAccG);
+  //Serial.print("\t ThrTar: ");
+  //Serial.print(thrTarget);
+  //Serial.print("\t ThrVal: ");
+  //Serial.print(thrValue);
   Serial.print("\t ESCThr: ");*/
-  Serial.println(escThrottle);
+  Serial.print(escThrottle);
+  Serial.println("");
     
   shiftData(logSize, throttleLog);
-  delay(20);
+  shiftData(logSize, pitchLog);
+  delay(10);
 }
 
 // ---------------------------------------------------------------------------------------
