@@ -1,14 +1,14 @@
 # ESP32_1Wheel
 
-I/Os:
-Pin 16 - Safety switch input
-Pin 17 - VESC output
-Pin 18 - BAT SW output
+Connections:
+DIO 2 - Internal LED
+DIO 16 - Safety switch input
+DIO 17 - VESC output
 
 Operation:
-speed linearly related to pitch (with smooting)
+speed affected by pitch via PD controller
 if pitching forward, speed up
-if pitching back, slow down, then reverse
+if pitching back, slow down or reverse
 if foot off safety switch, stop
 
 Functionality not yet implemented:
