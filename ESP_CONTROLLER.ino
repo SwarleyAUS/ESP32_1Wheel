@@ -1,17 +1,17 @@
-#include <VescUart.h>
-#include <Kalman.h>
 #include <MPU6050.h>
+#include <Kalman.h>
 #include <I2Cdev.h>
 #include <Wire.h>
+#include <VescUart.h>
 
 /* Connections:
    DIO 2 - Internal LED
+   DIO 15 - MPU interrupt
    DIO 16 - Safety switch input
    DIO 17 - VESC output
 
    Operation:
-   speed ~linearly related to pitch:
-    - pitch tied to ThrValue
+   speed tied to pitch through PD controller
    if pitching forward, speed up
    if pitching back, slow down, then reverse
    if foot off safety switch, stop
@@ -27,38 +27,37 @@
 
 // Acc/Gyro
 MPU6050 mpu6050;
-
 const uint16_t MPU = 0x68;
 int16_t ax, ay, az, gx, gy, gz;
-float zAccG, pitch, prevPitch, yGyro, rawPitch, error, gyroPitch, accPitch;
+float zAccG, pitch, yGyro, gyroPitch, accPitch;
 float previousTime, currentTime, elapsedTimeSecs;
-float gyro[2];
 
 // Kalman & PID
 Kalman kalman;
 uint32_t timer;
-double Kp = 1.0, Ki = 0.0005, Kd = 0.0;
+double Kp = 1.0, Ki = 0.0005, Kd = 0.01;
 
 // Misc
 float thrValue = 0.0;
 float thrTarget = 0.0;
 int escThrottle = 0;
 bool motorEn = false;
-int firstRun = 1;
+bool firstRun = true;
 
 // Consts
-const int logSize = 50;
 const int LED = 2;
+const int INT = 15;
 const int SAFE_SW = 16;
 const int VESC_THR = 17;
 float accLimit = 16384.0;
 float gyroLimit = 131.0;
-float throttleLog[logSize];
 
-struct bldcMeasure measuredValues;
+VescUart UART;
 
 void setup() {
   Serial.begin(115200);
+  Serial1.begin(115200);
+  UART.setSerialPort(&Serial1);
   
   ledcSetup(0, 5000, 8);
   ledcAttachPin(VESC_THR, 0);
@@ -66,17 +65,17 @@ void setup() {
   
   //delay(10000);
   Wire.begin();
-  Wire.setClock(100000);
+  Wire.setClock(400000);
   Serial.println("I2C");
 
   // Custom offset
   mpu6050.initialize();  
-  mpu6050.setXAccelOffset(-4114);
-  mpu6050.setYAccelOffset(-24);
-  mpu6050.setZAccelOffset(1667);
-  mpu6050.setXGyroOffset(82);
-  mpu6050.setYGyroOffset(-33);
-  mpu6050.setZGyroOffset(8);
+  mpu6050.setXAccelOffset(-4203);
+  mpu6050.setYAccelOffset(-21);
+  mpu6050.setZAccelOffset(1673);
+  mpu6050.setXGyroOffset(93);
+  mpu6050.setYGyroOffset(-17);
+  mpu6050.setZGyroOffset(4);
   
   pinMode(SAFE_SW, INPUT_PULLUP); // SAFETY INPUT
   pinMode(VESC_THR, OUTPUT); // VESC OUTPUT
@@ -85,71 +84,71 @@ void setup() {
   for (int i = 0; i < logSize; i++) {
     throttleLog[i] = 127;
   }
-  
   kalman.setAngle(pitch);  
 }
 
 // ---------------------------------------------------------------------------------------
 
 void loop() {
-  /*if (VescUartGetValue(measuredValues)) {
-    SerialPrint(measuredValues);
-  }*/  
+  /*if (UART.getVescValues()) {
+    Serial.println(UART.data.rpm);
+    Serial.println(UART.data.inpVoltage);
+    Serial.println(UART.data.ampHours);
+    Serial.println(UART.data.avgMotorCurrent);
+  }*/
+  
   previousTime = currentTime;
   currentTime = millis();
   elapsedTimeSecs = (currentTime - previousTime) / 1000.0;  
   
   // SET TARGET THROTTLE
   yGyro = getGyRaw();
-  gyroPitch = getGyVal(yGyro);
-  accPitch = getAccVal();
-  pitch = getCompPitch(gyroPitch, accPitch);
+  accPitch = getAccPitch();
+  
+  zAccG = getAccVal();
+  //zAccG = az * 0.5 + (zAccG * 0.5); // Low pass filter
+  
+  // If deemed to be level, horizontally, (given by vertical g (m/s) value & accPitch) then begin accepting gyro data
+  /*if (firstRun == true) {
+    if (zAccG >= 9.7 && pitch >= -1 && pitch <= 1) {
+      firstRun = false;
+      Serial.println("GYRO INIT");
+    } else {*/
+      pitch = accPitch;
+    /*}
+  } else {
+    gyroPitch = getGyPitch(yGyro);
+    pitch = getCompPitch(gyroPitch, accPitch);
+  }*/
   pitch = getKalPitch(pitch);
   
-  /*if (digitalRead(SAFE_SW) == 0) {
+  if (digitalRead(SAFE_SW) == 0) {
     digitalWrite(LED, HIGH);
-    if (pitch > -2 && pitch < 2 && motorEn == false) { // After leaning to level OK to move off    
+    if (pitch > -3 && pitch < 3 && motorEn == false) { // After leaning to level OK to move off
       motorEn = true;
       Serial.println("MOTOR EN");
-    } else if (motorEn == true) { */
-      thrTarget = pitch * Kp /*+ (error/1000000.0) * Ki*/ + yGyro * Kd;
-      //thrValue = setThrottle(thrTarget, thrValue); // Increase/decrease throttle
-      thrValue = mapf(thrTarget, -40.0, 40.0, 0.0, 255.0, 0.0, 255.0);
-   /* }
+    } else if (motorEn == true) {
+      thrTarget = pitch * Kp + yGyro * Kd;
+      thrValue = mapf(thrTarget, -25.0, 25.0, 0.0, 255.0, 0.0, 255.0);
+    }
   } else {
     digitalWrite(LED, LOW);
-    thrValue = 0.0;
+    thrValue = 127.0;
     motorEn = false;
+    firstRun = true;
   }
-  */
-    
-  // DEBUG OUTPUT
+
   Serial.print(pitch);
-  Serial.print("\t");
-  delay(5);
+  //Serial.print("\t");
+  //Serial.print(thrValue);
+  Serial.println();
+  //delay(10);
   
   // WRITE THROTTLE VALUE
   setThrottle(thrValue);
 }
 
 // ---------------------------------------------------------------------------------------
-
-float setThrottle(float thrTarget, float thrValue) {
-  if (thrTarget < 0) {
-    if (thrTarget < thrValue) {
-      thrValue = thrValue + ((thrTarget - thrValue)/30.0);
-    } else if (thrTarget > thrValue) {
-      thrValue = thrValue + (((thrTarget - thrValue)/20.0));
-    }
-  } else {
-    if (thrTarget > thrValue) { // Increase throttle if pitching forward
-      thrValue = thrValue + ((thrTarget - thrValue)/30.0);
-    } else if (thrTarget < thrValue) { // Decrease throttle if pitching back
-      thrValue = thrValue + (((thrTarget - thrValue)/20.0));
-    }
-  }
-  return thrValue;
-}
 
 float mapf(float x, float in_min, float in_max, float out_min, float out_max, float lowLim, float upLim) {
   float out;
@@ -162,42 +161,27 @@ float mapf(float x, float in_min, float in_max, float out_min, float out_max, fl
   return out;
 }
 
-float avgData(int bufSize, float bufArray[]) {
-  float sum = 0.0;
-  for (int i = 0; i < bufSize; i++) {
-    sum = sum + bufArray[i];
-  }
-  sum = sum / bufSize;
-  return sum;
-}
-
-void shiftData(int bufSize, float bufArray[]) {
-  for (int i = (bufSize - 1); i > 0; i--) {
-    bufArray[i] = bufArray[i - 1];
-  }
-}
-
 float getGyRaw() {
   mpu6050.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);  
   yGyro = (float) gy / gyroLimit;
-  yGyro = yGyro + 0.0775; // Drift offset
+  yGyro = yGyro + 0.0222; // Drift offset
   return yGyro;
 }
 
-float getGyVal(float gyro) {
-  gyroPitch = gyroPitch + gyro * elapsedTimeSecs;
-  return gyroPitch;
+float getGyPitch(float gyro) {
+  return gyroPitch = gyroPitch + gyro * elapsedTimeSecs;
+}
+
+float getAccPitch() {
+  return accPitch = (float) atan2((-ax), sqrt(ay * ay + az * az)) * 57.3;
 }
 
 float getAccVal() {
-  //zAccG = 10.0 * (float) az / accLimit; // Vertical accel value
-  accPitch = (float) atan2((-ax), sqrt(ay * ay + az * az)) * 57.3;
-  return accPitch;
+  return zAccG = 9.8 * (float) az / accLimit; // Vertical accel value
 }
 
 float getCompPitch(float gyro, float acc) {  
-  pitch = 0.95 * gyro + 0.05 * acc;
-  return pitch;
+  return pitch = 0.95 * gyro + 0.05 * acc;
 }
 
 float getKalPitch(float pitch) {
@@ -208,10 +192,7 @@ float getKalPitch(float pitch) {
 }
 
 void setThrottle(float throttle) {
-  throttleLog[0] = throttle; 
-  throttle = avgData(logSize, throttleLog);
-  shiftData(logSize, throttleLog);
   ledcWrite(0, throttle); // Output analog data to ESC (0-255, 0-3.3V)
-  Serial.println(throttle);
-  //VescUartSetDuty(thrValue);
+  //throttle = mapf(throttle, 0.0, 255.0, -100.0, 100.0, -100.0, 100.0);
+  //UART.setDuty(throttle);
 }
