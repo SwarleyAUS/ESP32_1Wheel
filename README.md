@@ -1,6 +1,6 @@
 # ESP32_1Wheel
 
-This is code for a DIY onewheel utilising and ESP32 and MPU6050.
+This is code for a DIY onewheel utilising an ESP32 and MPU6050.
 
 Connections:
 DIO 2 - Internal LED
