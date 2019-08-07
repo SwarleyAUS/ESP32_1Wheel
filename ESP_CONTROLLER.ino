@@ -3,19 +3,11 @@
 #include <I2Cdev.h>
 #include <Wire.h>
 
-#define MPU6050_ACCEL_FS_2 0x00
-#define MPU6050_ACCEL_FS_4 0x01
-#define MPU6050_ACCEL_FS_8 0x02
-#define MPU6050_ACCEL_FS_16 0x03
-
-#define MPU6050_GYRO_FS_250 0x00
-#define MPU6050_GYRO_FS_500 0x01
 #define MPU6050_GYRO_FS_1000 0x02
 #define MPU6050_GYRO_FS_2000 0x03
 
 /* Connections:
    DIO 2 - Internal LED
-   DIO 15 - MPU interrupt
    DIO 16 - Safety switch input
    DIO 17 - VESC output
 
@@ -24,27 +16,19 @@
    if pitching forward, speed up
    if pitching back, slow down, then reverse
    if foot off safety switch, stop
-
-   Functionality not yet implemented:
-   if acceleration consistently upwards (ascending), increase pitch-speed ratio
-   if acceleration consistently downwards (descending), decrease pitch-speed ratio
-   if pitching back and going down a slope (ie fwdDir = true but pich < 0), brake (or reverse throttle)
-   if pitching forward x amount, accelerate to y speed. if pitch returned to ~0, continue at speed y
-   if pitching forward 2x amount, accelerate to 2y speed. if pitch returned to ~0, continue at speed y or 2y
-   if pitching back, decelerate from speed from y or 2y, deceleration proportional to pitch angle
 */
 
 // Acc/Gyro
 MPU6050 mpu6050;
 const uint16_t MPU = 0x68;
 int16_t ax, ay, az, gx, gy, gz;
-float zAccG, pitch, yGyro, gyroPitch, accPitch;
+float zAccG, pitch, yGyro, gyroPitch, accPitch,;
 float previousTime, currentTime, elapsedTimeSecs;
 
 // Kalman & PID
 Kalman kalman;
 uint32_t timer;
-double Kp = 1.0, Ki = 0.0005, Kd = 0.05;
+double Kp = 1.1, Ki = 0.0005, Kd = 0.8;
 
 // Misc
 float thrValue = 0.0;
@@ -54,14 +38,12 @@ bool motorEn = false;
 bool firstRun = true;
 
 // Consts
-const int logSize = 25;
 const int LED = 2;
-const int INT = 15;
-const int SAFE_SW = 16;
+const int SAFE_SW_1 = 16; // Change to 12
+const int SAFE_SW_2 = 13;
 const int VESC_THR = 17;
 float accLimit = 16384.0;
 float gyroLimit = 32.8;
-float throttleLog[logSize];
 
 void setup() {
   Serial.begin(115200);
@@ -70,7 +52,7 @@ void setup() {
   ledcAttachPin(VESC_THR, 0);
   ledcWrite(0, 127);
   
-  delay(10000);
+  //delay(10000);
   Wire.begin();
   Wire.setClock(400000);
   
@@ -84,25 +66,23 @@ void setup() {
   mpu6050.setYGyroOffset(-17);
   mpu6050.setZGyroOffset(4);
   
-  pinMode(SAFE_SW, INPUT_PULLUP); // SAFETY INPUT
+  pinMode(SAFE_SW_1, INPUT_PULLUP); // SAFETY INPUT 1
+  pinMode(SAFE_SW_2, INPUT_PULLUP); // SAFETY INPUT 2
   pinMode(VESC_THR, OUTPUT); // VESC OUTPUT
   pinMode(LED, OUTPUT); // ONBOARD LED OUTPUT
-
+  
   kalman.setAngle(pitch);
 }
 
 // ---------------------------------------------------------------------------------------
 
 void loop() {
-  
   previousTime = currentTime;
   currentTime = millis();
-  elapsedTimeSecs = (currentTime - previousTime) / 1000.0;  
+  elapsedTimeSecs = (currentTime - previousTime) / 1000.0;
   
-  // SET TARGET THROTTLE
   yGyro = getGyRaw();
-  accPitch = getAccPitch();
-  
+  accPitch = getAccPitch();  
   zAccG = getAccVal();
   //zAccG = az * 0.5 + (zAccG * 0.5); // Low pass filter
   
@@ -110,24 +90,25 @@ void loop() {
   if (firstRun == true) {
     if (zAccG >= 9.7 && pitch >= -1 && pitch <= 1) {
       firstRun = false;
-      Serial.println("GYRO INIT");
     } else {
+      gyroPitch = 0;
       pitch = accPitch;
     }
   } else {
     gyroPitch = getGyPitch(yGyro);
-    pitch = getCompPitch(gyroPitch, accPitch);
+    pitch = getCompPitch(gyroPitch, accPitch, pitch);
+    //pitch = getKalPitch(pitch); // Slows by ~1500 microseconds when enabled
   }
-  pitch = getKalPitch(pitch);
-  
-  if (digitalRead(SAFE_SW) == 0) {
+
+  //if (analogRead(SAFE_SW_1) <= 100 && analogRead(SAFE_SW_2) <= 100) {
+  if (digitalRead(SAFE_SW_1) == 0) {
     digitalWrite(LED, HIGH);
-    if (pitch > -3 && pitch < 3 && motorEn == false) { // After leaning to level OK to move off
+    if (pitch > -1 && pitch < 1 && motorEn == false) { // After leaning to level OK to move off
       motorEn = true;
       Serial.println("MOTOR EN");
     } else if (motorEn == true) {
       thrTarget = pitch * Kp + yGyro * Kd;
-      thrValue = mapf(thrTarget, -25.0, 25.0, 0.0, 255.0, 0.0, 255.0);
+      thrValue = mapf(thrTarget, -30.0, 30.0, 0.0, 255.0, 0.0, 255.0);
     }
   } else {
     digitalWrite(LED, LOW);
@@ -136,10 +117,10 @@ void loop() {
     firstRun = true;
   }
 
-  /*Serial.print(pitch);
-  Serial.print("\t");
-  Serial.print(thrTarget);
-  Serial.println();*/
+  Serial.print(pitch);
+  //Serial.print("\t");
+  //Serial.print(thrValue);
+  Serial.println();
   
   // WRITE THROTTLE VALUE
   setThrottle(thrValue);
@@ -192,8 +173,9 @@ float getAccVal() {
   return zAccG = 9.8 * (float) az / accLimit; // Vertical accel value
 }
 
-float getCompPitch(float gyro, float acc) {  
-  return pitch = 0.75 * gyro + 0.25 * acc;
+float getCompPitch(float gyro, float acc, float pitch) {
+  return compPitch = 0.8 * gyro + 0.2 * acc; // Coarse
+  //return compPitch = 0.7 * gyro + 0.2 * acc + 0.1 * pitch; // Smooth(er)
 }
 
 float getKalPitch(float pitch) {
@@ -204,8 +186,5 @@ float getKalPitch(float pitch) {
 }
 
 void setThrottle(float throttle) {
-  throttleLog[0] = throttle;
-  throttle = avgData(logSize, throttleLog);
-  shiftData(logSize, throttleLog);
   ledcWrite(0, throttle); // Output analog data to ESC (0-255, 0-3.3V)
 }
