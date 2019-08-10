@@ -2,13 +2,16 @@
 #include <Kalman.h>
 #include <I2Cdev.h>
 #include <Wire.h>
+#include <Arduino.h>
+#include <analogWrite.h>
 
 #define MPU6050_GYRO_FS_1000 0x02
 #define MPU6050_GYRO_FS_2000 0x03
 
 /* Connections:
    DIO 2 - Internal LED
-   DIO 16 - Safety switch input
+   DIO 16 - Safety switch input 1
+   DIO 13 - Safety switch input 2
    DIO 17 - VESC output
 
    Operation:
@@ -22,24 +25,25 @@
 MPU6050 mpu6050;
 const uint16_t MPU = 0x68;
 int16_t ax, ay, az, gx, gy, gz;
-float zAccG, pitch, yGyro, gyroPitch, accPitch,;
+float zAccG, pitch, yGyro, gyroPitch, accPitch, compPitch;
 float previousTime, currentTime, elapsedTimeSecs;
 
 // Kalman & PID
 Kalman kalman;
 uint32_t timer;
-double Kp = 1.1, Ki = 0.0005, Kd = 0.8;
+double Kp = 1.75, Ki = 0.0005, Kd = 0.12;
 
 // Misc
 float thrValue = 0.0;
 float thrTarget = 0.0;
+float prevThrottleValue = 0.0;
 int escThrottle = 0;
 bool motorEn = false;
 bool firstRun = true;
 
 // Consts
 const int LED = 2;
-const int SAFE_SW_1 = 16; // Change to 12
+const int SAFE_SW_1 = 14;
 const int SAFE_SW_2 = 13;
 const int VESC_THR = 17;
 float accLimit = 16384.0;
@@ -52,7 +56,6 @@ void setup() {
   ledcAttachPin(VESC_THR, 0);
   ledcWrite(0, 127);
   
-  //delay(10000);
   Wire.begin();
   Wire.setClock(400000);
   
@@ -82,7 +85,7 @@ void loop() {
   elapsedTimeSecs = (currentTime - previousTime) / 1000.0;
   
   yGyro = getGyRaw();
-  accPitch = getAccPitch();  
+  accPitch = getAccPitch();
   zAccG = getAccVal();
   //zAccG = az * 0.5 + (zAccG * 0.5); // Low pass filter
   
@@ -101,29 +104,34 @@ void loop() {
   }
 
   //if (analogRead(SAFE_SW_1) <= 100 && analogRead(SAFE_SW_2) <= 100) {
-  if (digitalRead(SAFE_SW_1) == 0) {
+  if (analogRead(SAFE_SW_1) <= 1000) {
     digitalWrite(LED, HIGH);
     if (pitch > -1 && pitch < 1 && motorEn == false) { // After leaning to level OK to move off
       motorEn = true;
-      Serial.println("MOTOR EN");
-    } else if (motorEn == true) {
-      thrTarget = pitch * Kp + yGyro * Kd;
-      thrValue = mapf(thrTarget, -30.0, 30.0, 0.0, 255.0, 0.0, 255.0);
+    } 
+    if (motorEn == true) {
+      thrTarget = pitch * Kp + yGyro * Kd + 0.75;
+      thrValue = mapf(thrTarget, -20.0, 20.0, 0.0, 255.0, 0.0, 255.0);
     }
   } else {
     digitalWrite(LED, LOW);
+    thrTarget = 0.0;
     thrValue = 127.0;
     motorEn = false;
     firstRun = true;
   }
+  thrValue = thrValue * 0.5 + prevThrottleValue * 0.5;
 
-  Serial.print(pitch);
+  //Serial.print(pitch);
+  //Serial.print("\t");
+  //Serial.print(thrTarget);
   //Serial.print("\t");
   //Serial.print(thrValue);
-  Serial.println();
+  //Serial.println();
   
   // WRITE THROTTLE VALUE
   setThrottle(thrValue);
+  prevThrottleValue = thrValue;
 }
 
 // ---------------------------------------------------------------------------------------
