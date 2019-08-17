@@ -6,6 +6,8 @@
 #include <Wire.h>
 #include <Arduino.h>
 #include <analogWrite.h>
+#include "BluetoothSerial.h"
+#include <VescUart.h>
 
 #define MPU6050_GYRO_FS_1000 0x02
 #define MPU6050_GYRO_FS_2000 0x03
@@ -14,7 +16,7 @@
    DIO 2 - Internal LED
    DIO 14 - Safety switch input 1
    DIO 12 - Safety switch input 2
-   DIO 27 - VESC output
+   DIO 16/17 - VESC UART
 
    Operation:
    speed tied to pitch through PD controller
@@ -32,8 +34,8 @@ float previousTime, currentTime, elapsedTimeSecs;
 
 // Kalman & PID
 Kalman kalman;
-uint32_t timer;
-double Kp = 1.75, Kd = 0.05;
+uint32_t timer, VESC_TIME = 0;
+double Kp = 1.75, Kd = 0.07;
 
 // Misc
 float thrValue = 96;
@@ -42,25 +44,27 @@ float prevThrottleValue = 0.0;
 int escThrottle = 0;
 bool motorEn = false;
 bool firstRun = true;
+char pitchString[5], thrString[5], dutyString[5], currString[5];
+char sBuffer[50];
+float VESC_VOLT, VESC_DUTY, VESC_CURR;
 
 // Consts
 const int LED = 2;
 const int SAFE_SW_1 = 14;
 const int SAFE_SW_2 = 12;
-const int VESC_THR = 27;
+float VESC_LIM = 255.0;
 float accLimit = 16384.0;
 float gyroLimit = 32.8;
 
-struct bldcMeasure measuredValues;
+BluetoothSerial SerialBT;
+VescUart Vesc;
 
 void setup() {
   Serial.begin(115200);
-  Serial1.begin(115200); // VESC
-  Serial2.begin(9600); // BT module
+  Serial1.begin(115200, SERIAL_8N1, 16, 17); // VESC
+  Vesc.setSerialPort(&Serial1);
   
-  ledcSetup(0, 5000, 8);
-  ledcAttachPin(VESC_THR, 0);
-  ledcWrite(0, 96);
+  SerialBT.begin("ESP32");
   
   Wire.begin();
   Wire.setClock(400000);
@@ -85,11 +89,7 @@ void setup() {
 
 // ---------------------------------------------------------------------------------------
 
-void loop() {
-  /*if (VescUartGetValue(measuredValues)) {
-    SerialPrint(measuredValues);
-  }*/
-  
+void loop() {  
   previousTime = currentTime;
   currentTime = millis();
   elapsedTimeSecs = (currentTime - previousTime) / 1000.0;
@@ -111,24 +111,25 @@ void loop() {
   } else {
     gyroPitch = getGyPitch(yGyro);
     pitch = getCompPitch(gyroPitch, accPitch, pitch);
-    //pitch = getKalPitch(pitch); // Slows by ~1500 microseconds when enabled
+    //pitch = getKalPitch(pitch); // Kalman slows by ~1500 microseconds when enabled
   }
 
-  //if (analogRead(SAFE_SW_1) <= 1000 && analogRead(SAFE_SW_2) <= 1000) {
+  //if (analogRead(SAFE_SW_1) <= 1000 && analogRead(SAFE_SW_2) <= 1000) { // For dual footpads
   if (analogRead(SAFE_SW_1) <= 1000) {
     digitalWrite(LED, HIGH);
     if (pitch > -3 && pitch < 3 && motorEn == false) { // After leaning to level OK to move off
       motorEn = true;
     } 
     if (motorEn == true) {
-      thrTarget = pitch * Kp + yGyro * Kd;
+      Serial.println("MOTOR EN");
+      thrTarget = pitch * Kp + yGyro * Kd + 1;
       // Adjusted range such that VESC ADC floating voltage and throttle voltage centre are matched (~1.25V):
-      thrValue = mapf(thrTarget, -20.0, 20.0, 0.0, 192.0, 0.0, 192.0); 
+      thrValue = mapf(thrTarget, -20.0, 20.0, 0.0, VESC_LIM, 0.0, VESC_LIM); 
       thrValue = thrValue * 0.5 + prevThrottleValue * 0.5;
     }
   } else {
     digitalWrite(LED, LOW);
-    thrValue = 96.0;
+    thrValue = VESC_LIM / 2.0;
     motorEn = false;
     firstRun = true;
   }
@@ -142,14 +143,26 @@ void loop() {
   //Serial.print(thrValue);
   //Serial.println();
   
-  //Serial2.print(pitch);
-  //Serial2.print("\t");
-  //Serial2.print(thrValue);
-  //Serial2.print("\t");
-  //Serial2.print(measuredValues.dutyCycleNow);
-  //Serial2.print("\t");
-  //Serial2.print(measuredValues.avgInputCurrent);
-  //Serial2.println();
+  if ((millis() - VESC_TIME) >= 200) {
+    if (Vesc.getVescValues()) {
+      VESC_VOLT = Vesc.data.inpVoltage;
+      VESC_DUTY = Vesc.data.ampHours;
+      VESC_CURR = Vesc.data.dutyCycleNow;
+    }
+    // Pitch, Throttle, Duty Cycle, Current
+    strcpy(sBuffer, dtostrf(pitch, 5, 1, pitchString));
+    strcat(sBuffer, " deg, ");
+    strcat(sBuffer, dtostrf(thrValue, 3, 0, thrString));
+    strcat(sBuffer, ", ");
+    strcat(sBuffer, dtostrf(VESC_DUTY, 4, 1, dutyString));
+    strcat(sBuffer, "%, ");
+    strcat(sBuffer, dtostrf(VESC_CURR, 4, 1, currString));
+    strcat(sBuffer, "A");
+    SerialBT.write((uint8_t *) sBuffer, strlen(sBuffer));
+    SerialBT.write('\r');
+    SerialBT.write('\n');
+    VESC_TIME = millis();
+  }
   
   // WRITE THROTTLE VALUE
   setThrottle(thrValue);
@@ -208,14 +221,13 @@ float getCompPitch(float gyro, float acc, float pitch) {
 }
 
 float getKalPitch(float pitch) {
-  double dt = (double)(micros() - timer) / 1000000; // Calculate delta time
+  double dt = (double)(micros() - timer) / 1000000;
   timer = micros();
   float kalAngleY = kalman.getAngle(pitch, (gy / 131.0), dt);
   return kalAngleY;
 }
 
 void setThrottle(float throttle) {
-  ledcWrite(0, throttle); // Output analog data to ESC (0-255, 0-3.3V)
-  //throttle = mapf(throttle, 0.0, 192.0, -1.0, 1.0, -1.0, 1.0);
-  //VescUartSetDuty(throttle);
+  throttle = mapf(throttle, 0.0, VESC_LIM, -1.0, 1.0, -1.0, 1.0);
+  Vesc.setDuty(throttle);
 }
